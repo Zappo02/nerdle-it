@@ -72,164 +72,188 @@ const EQS8 = [
 
 const ALL = [...EQS7, ...EQS8];
 const MAX_TENTATIVI = 6;
-const STORAGE_KEY = "nerdle_it_v1";
+const STORAGE_KEY = "nerdle_it_v2"; // v2: storage multi-sessione
 const THEME_KEY = "nerdle_it_theme";
 const EPOCH = new Date("2026-01-01T00:00:00+01:00");
-const FLIP_DELAY = 120; // ms per cella (era 60)
+const FLIP_DELAY = 120;
+const ARCHIVE_DAYS = 7; // giorni precedenti accessibili (si accumulano)
 
 // ─── UTILITY ──────────────────────────────────────────────────────────────────
 
-function getDailyTarget() {
-  const todayStr = new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Rome" }).format(new Date());
-  const today = new Date(todayStr + "T00:00:00+01:00");
-  const days = Math.floor((today - EPOCH) / 86400000);
-  const idx = ((days % ALL.length) + ALL.length) % ALL.length;
-  return ALL[idx];
+function getTargetForDate(dateStr) {
+  // dateStr: "DD/MM/YYYY"
+  const [d, m, y] = dateStr.split("/").map(Number);
+  const date = new Date(y, m - 1, d, 0, 0, 0);
+  const epoch = new Date(2026, 0, 1, 0, 0, 0);
+  const days = Math.floor((date - epoch) / 86400000);
+  return ALL[((days % ALL.length) + ALL.length) % ALL.length];
 }
 
-function getItalianDate() {
+function getItalianDate(offsetDays = 0) {
+  const now = new Date();
+  now.setDate(now.getDate() + offsetDays); // offset negativo = giorni fa
   return new Intl.DateTimeFormat("it-IT", {
     timeZone: "Europe/Rome", day: "2-digit", month: "2-digit", year: "numeric",
-  }).format(new Date());
+  }).format(now);
+}
+
+// Genera lista date: oggi + ultimi N giorni passati (in ordine cronologico inverso)
+function getAvailableDates() {
+  const dates = [];
+  for (let i = 0; i >= -ARCHIVE_DAYS; i--) {
+    dates.push(getItalianDate(i));
+  }
+  return dates; // [oggi, ieri, 2 giorni fa, ...]
 }
 
 function getMidnightCountdown() {
-  const now = new Date();
-  const romeStr = new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Rome", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(now);
+  const romeStr = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Europe/Rome", hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).format(new Date());
   const [h, m, s] = romeStr.split(":").map(Number);
-  const secondsLeft = (23 - h) * 3600 + (59 - m) * 60 + (60 - s);
-  const hh = String(Math.floor(secondsLeft / 3600)).padStart(2, "0");
-  const mm = String(Math.floor((secondsLeft % 3600) / 60)).padStart(2, "0");
-  const ss = String(secondsLeft % 60).padStart(2, "0");
-  return `${hh}:${mm}:${ss}`;
+  const left = (23 - h) * 3600 + (59 - m) * 60 + (60 - s);
+  return [Math.floor(left / 3600), Math.floor((left % 3600) / 60), left % 60]
+    .map((n) => String(n).padStart(2, "0")).join(":");
 }
 
 function validateEquation(eq) {
-  const parts = eq.split("=");
-  if (parts.length !== 2) return false;
+  const p = eq.split("=");
+  if (p.length !== 2) return false;
   try {
-    const expr = parts[0].replace(/×/g, "*").replace(/÷/g, "/");
     // eslint-disable-next-line no-new-func
-    const val = Function('"use strict"; return (' + expr + ")")();
-    return Math.abs(val - parseFloat(parts[1])) < 0.001 && isFinite(val);
+    const v = Function('"use strict";return(' + p[0].replace(/×/g, "*").replace(/÷/g, "/") + ")")();
+    return Math.abs(v - parseFloat(p[1])) < 0.001 && isFinite(v);
   } catch { return false; }
 }
 
 function computeFeedback(guess, target) {
-  const n = target.length;
-  const result = Array(n).fill("absent");
-  const used = Array(n).fill(false);
+  const n = target.length, res = Array(n).fill("absent"), used = Array(n).fill(false);
+  for (let i = 0; i < n; i++) if (guess[i] === target[i]) { res[i] = "correct"; used[i] = true; }
   for (let i = 0; i < n; i++) {
-    if (guess[i] === target[i]) { result[i] = "correct"; used[i] = true; }
+    if (res[i] === "correct") continue;
+    for (let j = 0; j < n; j++) if (!used[j] && guess[i] === target[j]) { res[i] = "present"; used[j] = true; break; }
   }
-  for (let i = 0; i < n; i++) {
-    if (result[i] === "correct") continue;
-    for (let j = 0; j < n; j++) {
-      if (!used[j] && guess[i] === target[j]) { result[i] = "present"; used[j] = true; break; }
-    }
-  }
-  return result;
+  return res;
 }
 
 function buildShareText(target, guesses, status, date) {
   const won = status === "won";
-  let text = `Nerdle·IT ${date}\n${won ? guesses.length : "X"}/${MAX_TENTATIVI} (${target.length} caratteri)\n\n`;
+  let t = `Nerdle·IT ${date}\n${won ? guesses.length : "X"}/${MAX_TENTATIVI} (${target.length} caratteri)\n\n`;
   guesses.forEach((g) => {
-    const fb = computeFeedback(g, target);
-    text += fb.map((f) => f === "correct" ? "🟩" : f === "present" ? "🟨" : "⬛").join("") + "\n";
+    t += computeFeedback(g, target).map((f) => f === "correct" ? "🟩" : f === "present" ? "🟨" : "⬛").join("") + "\n";
   });
-  text += "\nuniversosportivo.com/nerdle";
-  return text;
+  return t + "\nuniversosportivo.com/nerdle";
 }
 
-function loadState() {
+function computeStats(sessions) {
+  // sessions: { [dateStr]: { guesses, status, ... } }
+  const all = Object.values(sessions).filter((s) => s.status === "won" || s.status === "lost");
+  const played = all.length;
+  const wonList = all.filter((s) => s.status === "won");
+  const dist = [0, 0, 0, 0, 0, 0];
+  wonList.forEach((s) => { if (s.guesses.length >= 1 && s.guesses.length <= 6) dist[s.guesses.length - 1]++; });
+  // Streak su date consecutive (oggi → indietro)
+  const dates = getAvailableDates(); // ordinato dal più recente
+  let streak = 0;
+  for (const d of dates) {
+    const s = sessions[d];
+    if (s && s.status === "won") streak++;
+    else if (s && s.status === "lost") break;
+    else break; // non ancora giocata → streak spezzata
+  }
+  // Max streak su tutte le sessioni ordinate per data
+  const sortedDates = Object.keys(sessions).sort();
+  let maxStreak = 0, cur = 0;
+  sortedDates.forEach((d) => {
+    if (sessions[d].status === "won") { cur++; maxStreak = Math.max(maxStreak, cur); }
+    else { cur = 0; }
+  });
+  return { played, won: wonList.length, winPct: played ? Math.round((wonList.length / played) * 100) : 0, dist, streak, maxStreak };
+}
+
+// ─── STORAGE ──────────────────────────────────────────────────────────────────
+// Struttura: { sessions: { "DD/MM/YYYY": { guesses, status } }, ... }
+
+function loadStorage() {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch { return {}; }
 }
-function saveState(s) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch {}
-}
-function loadTheme() {
-  try { return localStorage.getItem(THEME_KEY) || "dark"; } catch { return "dark"; }
-}
-function saveTheme(t) {
-  try { localStorage.setItem(THEME_KEY, t); } catch {}
+function saveStorage(s) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch {} }
+function loadTheme() { try { return localStorage.getItem(THEME_KEY) || "dark"; } catch { return "dark"; } }
+function saveTheme(t) { try { localStorage.setItem(THEME_KEY, t); } catch {} }
+
+function getSession(storage, dateStr) {
+  return storage.sessions?.[dateStr] || { guesses: [], status: "playing" };
 }
 
 // ─── TEMA ─────────────────────────────────────────────────────────────────────
 
 function getTheme(mode) {
-  const dark = {
-    bg: "#0d0f0c",
-    surface: "#141710",
-    cell: "#1a1e18",
-    border: "#2a3028",
-    green: "#4ade80",
-    greenDim: "#1a3d27",
-    yellow: "#fbbf24",
-    yellowDim: "#3d3010",
-    gray: "#4b5563",
-    grayDim: "#1f2320",
-    text: "#d1fae5",
-    textMuted: "#6b7280",
-    accent: "#34d399",
-    eqBorder: "#2a3a50",
-    eqColor: "#6baed6",
-    eqBg: "#0d1a2a",
-    scanline: "rgba(0,0,0,0.12)",
-    archBg: "#141710",
-    archBorder: "#2a3028",
-    btnHoverBg: "#34d399",
-    btnHoverColor: "#0d0f0c",
-    inputBorder: "#3a4a38",
-    red: "#f87171",
-    sectionBorder: "#1a1e18",
+  const d = {
+    bg: "#0d0f0c", surface: "#141710", cell: "#1a1e18", border: "#2a3028",
+    green: "#4ade80", greenDim: "#1a3d27", yellow: "#fbbf24", yellowDim: "#3d3010",
+    gray: "#4b5563", grayDim: "#1f2320", text: "#d1fae5", textMuted: "#6b7280",
+    accent: "#34d399", eqBorder: "#2a3a50", eqColor: "#6baed6", eqBg: "#0d1a2a",
+    btnHoverBg: "#34d399", btnHoverColor: "#0d0f0c",
+    inputBorder: "#3a4a38", red: "#f87171", sectionBorder: "#1a1e18",
+    modalBg: "rgba(0,0,0,0.8)", modalCard: "#141710",
+    absentKey: "#111", absentKeyColor: "#333", absentKeyBorder: "#222",
+    archiveItemBg: "#1a1e18", archiveItemBorder: "#2a3028",
+    archivePastBg: "#141710", archivePastBorder: "#2a3028",
+    pillBg: "#1a1e18",
   };
-  const light = {
-    bg: "#f5f5f0",
-    surface: "#ffffff",
-    cell: "#f0f0ea",
-    border: "#d0d5cc",
-    green: "#16a34a",
-    greenDim: "#dcfce7",
-    yellow: "#d97706",
-    yellowDim: "#fef9c3",
-    gray: "#9ca3af",
-    grayDim: "#f3f4f6",
-    text: "#1a1a1a",
-    textMuted: "#6b7280",
-    accent: "#059669",
-    eqBorder: "#93c5fd",
-    eqColor: "#1d4ed8",
-    eqBg: "#eff6ff",
-    scanline: "transparent",
-    archBg: "#f9f9f6",
-    archBorder: "#e5e7eb",
-    btnHoverBg: "#059669",
-    btnHoverColor: "#ffffff",
-    inputBorder: "#86efac",
-    red: "#dc2626",
-    sectionBorder: "#e5e7eb",
+  const l = {
+    bg: "#f5f5f0", surface: "#ffffff", cell: "#f0f0ea", border: "#d0d5cc",
+    green: "#16a34a", greenDim: "#dcfce7", yellow: "#d97706", yellowDim: "#fef9c3",
+    gray: "#9ca3af", grayDim: "#f3f4f6", text: "#1a1a1a", textMuted: "#6b7280",
+    accent: "#059669", eqBorder: "#93c5fd", eqColor: "#1d4ed8", eqBg: "#eff6ff",
+    btnHoverBg: "#059669", btnHoverColor: "#ffffff",
+    inputBorder: "#86efac", red: "#dc2626", sectionBorder: "#e5e7eb",
+    modalBg: "rgba(0,0,0,0.5)", modalCard: "#ffffff",
+    absentKey: "#e5e7eb", absentKeyColor: "#9ca3af", absentKeyBorder: "#d1d5db",
+    archiveItemBg: "#f0f0ea", archiveItemBorder: "#d0d5cc",
+    archivePastBg: "#f9f9f6", archivePastBorder: "#e5e7eb",
+    pillBg: "#f0f0ea",
   };
-  return mode === "dark" ? dark : light;
+  return mode === "dark" ? d : l;
+}
+
+// ─── MODALE ───────────────────────────────────────────────────────────────────
+
+function Modal({ title, onClose, T, children }) {
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: T.modalBg, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: T.modalCard, border: `1px solid ${T.border}`, borderRadius: 10, width: "100%", maxWidth: 440, maxHeight: "88vh", overflowY: "auto", padding: 24, position: "relative" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <div style={{ fontFamily: "'Share Tech Mono',monospace", fontSize: 13, color: T.accent, letterSpacing: 2 }}>{title}</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: T.textMuted, fontSize: 22, cursor: "pointer", lineHeight: 1, padding: "0 4px" }}>×</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
 }
 
 // ─── COMPONENTE PRINCIPALE ────────────────────────────────────────────────────
 
 export default function NerdleIT() {
-  const TARGET = getDailyTarget();
-  const LEN = TARGET.length;
-  const TODAY = getItalianDate();
-
+  const TODAY = getItalianDate(0);
   const [theme, setTheme] = useState(loadTheme);
   const T = getTheme(theme);
 
-  const [gameState, setGameState] = useState(() => {
-    const saved = loadState();
-    if (saved.date !== TODAY) {
-      return { date: TODAY, guesses: [], status: "playing", archive: saved.archive || [] };
-    }
-    return saved;
+  // Storage multi-sessione
+  const [storage, setStorage] = useState(() => {
+    const s = loadStorage();
+    if (!s.sessions) s.sessions = {};
+    return s;
   });
+
+  // Data attualmente in gioco (default: oggi)
+  const [activeDate, setActiveDate] = useState(TODAY);
+
+  const TARGET = getTargetForDate(activeDate);
+  const LEN = TARGET.length;
+  const isToday = activeDate === TODAY;
+  const session = getSession(storage, activeDate);
 
   const [input, setInput] = useState([]);
   const [message, setMessage] = useState("");
@@ -239,21 +263,18 @@ export default function NerdleIT() {
   const [bouncingRow, setBouncingRow] = useState(null);
   const [copied, setCopied] = useState(false);
   const [countdown, setCountdown] = useState(getMidnightCountdown());
+  const [modal, setModal] = useState(null);
   const msgTimeout = useRef(null);
 
-  // Salva stato
-  useEffect(() => { saveState(gameState); }, [gameState]);
+  // Reset input quando cambia la data attiva
+  useEffect(() => { setInput([]); setMessage(""); }, [activeDate]);
 
-  // Salva tema
+  useEffect(() => { saveStorage(storage); }, [storage]);
   useEffect(() => { saveTheme(theme); }, [theme]);
-
-  // Timer countdown
   useEffect(() => {
     const id = setInterval(() => setCountdown(getMidnightCountdown()), 1000);
     return () => clearInterval(id);
   }, []);
-
-  // Altezza iframe
   useEffect(() => {
     const send = () => window.parent?.postMessage({ type: "nerdle-height", height: document.body.scrollHeight }, "*");
     send();
@@ -261,11 +282,10 @@ export default function NerdleIT() {
     ro.observe(document.body);
     return () => ro.disconnect();
   }, []);
-
-  // Keydown
   useEffect(() => {
     const handler = (e) => {
-      if (gameState.status !== "playing" || animating) return;
+      if (modal) { if (e.key === "Escape") setModal(null); return; }
+      if (session.status !== "playing" || animating) return;
       if (e.key === "Backspace") { handleKey("DEL"); return; }
       if (e.key === "Enter") { handleKey("INVIO"); return; }
       if ("0123456789".includes(e.key)) { handleKey(e.key); return; }
@@ -278,6 +298,13 @@ export default function NerdleIT() {
     return () => window.removeEventListener("keydown", handler);
   });
 
+  const saveSession = useCallback((dateStr, newSession) => {
+    setStorage((prev) => {
+      const next = { ...prev, sessions: { ...prev.sessions, [dateStr]: newSession } };
+      return next;
+    });
+  }, []);
+
   const showMessage = useCallback((txt, duration = 2000) => {
     setMessage(txt);
     clearTimeout(msgTimeout.current);
@@ -285,171 +312,118 @@ export default function NerdleIT() {
   }, []);
 
   const handleKey = useCallback((k) => {
-    if (gameState.status !== "playing" || animating) return;
+    if (session.status !== "playing" || animating) return;
     if (k === "DEL") { setInput((p) => p.slice(0, -1)); return; }
     if (k === "INVIO") { submitGuess(); return; }
     setInput((p) => p.length < LEN ? [...p, k] : p);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gameState.status, animating, input, LEN]);
+  }, [session.status, animating, input, LEN]);
 
   const submitGuess = () => {
     const guess = input.join("");
-    if (guess.length < LEN) {
-      setShakeRow(true); setTimeout(() => setShakeRow(false), 400);
-      showMessage(`Troppo corta (${guess.length}/${LEN})`); return;
-    }
-    if (!guess.includes("=")) {
-      setShakeRow(true); setTimeout(() => setShakeRow(false), 400);
-      showMessage("Manca il simbolo ="); return;
-    }
-    if (!validateEquation(guess)) {
-      setShakeRow(true); setTimeout(() => setShakeRow(false), 400);
-      showMessage("Equazione matematicamente errata"); return;
-    }
+    if (guess.length < LEN) { shake(); showMessage(`Troppo corta (${guess.length}/${LEN})`); return; }
+    if (!guess.includes("=")) { shake(); showMessage("Manca il simbolo ="); return; }
+    if (!validateEquation(guess)) { shake(); showMessage("Equazione matematicamente errata"); return; }
 
-    const rowIdx = gameState.guesses.length;
-    setAnimating(true);
-    setFlippingRow(rowIdx);
-    setInput([]);
-
+    const rowIdx = session.guesses.length;
+    setAnimating(true); setFlippingRow(rowIdx); setInput([]);
     const won = guess === TARGET;
-    const newGuesses = [...gameState.guesses, guess];
+    const newGuesses = [...session.guesses, guess];
     const lost = !won && newGuesses.length >= MAX_TENTATIVI;
-    const flipDuration = LEN * FLIP_DELAY + 500;
 
     setTimeout(() => {
-      setFlippingRow(null);
-      setAnimating(false);
-
-      const newArchive = [...(gameState.archive || [])];
-      if (!newArchive.find((a) => a.date === TODAY)) {
-        newArchive.push({ date: TODAY, eq: TARGET, result: won ? "won" : lost ? "lost" : "playing", att: newGuesses.length });
-        if (newArchive.length > 30) newArchive.shift();
-      }
-
-      setGameState((prev) => ({
-        ...prev,
-        guesses: newGuesses,
-        status: won ? "won" : lost ? "lost" : "playing",
-        archive: newArchive,
-      }));
-
+      setFlippingRow(null); setAnimating(false);
+      const newSession = { guesses: newGuesses, status: won ? "won" : lost ? "lost" : "playing" };
+      saveSession(activeDate, newSession);
       if (won) {
         setBouncingRow(rowIdx);
         setTimeout(() => setBouncingRow(null), 600);
         showMessage("🎯 Esatto!", 0);
+        setTimeout(() => setModal("stats"), 1800);
       } else if (lost) {
         showMessage("Soluzione: " + TARGET, 0);
       }
-    }, flipDuration);
+    }, LEN * FLIP_DELAY + 500);
   };
 
-  // Stati tastiera
+  const shake = () => { setShakeRow(true); setTimeout(() => setShakeRow(false), 400); };
+
+  // Stati tastiera per sessione attiva
   const keyStates = {};
-  gameState.guesses.forEach((g) => {
-    const fb = computeFeedback(g, TARGET);
-    g.split("").forEach((ch, i) => {
-      const cur = keyStates[ch], next = fb[i];
-      if (!cur) keyStates[ch] = next;
-      else if (cur === "correct") return;
-      else if (next === "correct") keyStates[ch] = "correct";
-      else if (next === "present") keyStates[ch] = "present";
+  session.guesses.forEach((g) => {
+    computeFeedback(g, TARGET).forEach((fb, i) => {
+      const ch = g[i], cur = keyStates[ch];
+      if (!cur) keyStates[ch] = fb;
+      else if (cur !== "correct" && fb === "correct") keyStates[ch] = "correct";
+      else if (cur === "absent" && fb === "present") keyStates[ch] = "present";
     });
   });
 
   const handleShare = async () => {
-    const text = buildShareText(TARGET, gameState.guesses, gameState.status, TODAY);
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      const ta = document.createElement("textarea");
-      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
-      document.body.appendChild(ta); ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-    }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    const text = buildShareText(TARGET, session.guesses, session.status, activeDate);
+    try { await navigator.clipboard.writeText(text); }
+    catch { const ta = document.createElement("textarea"); ta.value = text; ta.style.cssText = "position:fixed;opacity:0"; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta); }
+    setCopied(true); setTimeout(() => setCopied(false), 2000);
   };
 
-  const toggleTheme = () => setTheme((t) => t === "dark" ? "light" : "dark");
+  // ─── STILI ────────────────────────────────────────────────────────────────
 
-  // ─── RENDER ────────────────────────────────────────────────────────────────
+  const mono = { fontFamily: "'Share Tech Mono',monospace" };
 
   const cellStyle = (state) => ({
     width: 46, height: 46, borderRadius: 4,
-    border: `1px solid ${
-      state === "correct" ? T.green :
-      state === "present" ? T.yellow :
-      state === "absent"  ? T.gray :
-      state === "active"  ? T.inputBorder :
-      state === "filled"  ? T.accent :
-      state === "eqfix"   ? T.eqBorder :
-      T.border
-    }`,
-    background:
-      state === "correct" ? T.greenDim :
-      state === "present" ? T.yellowDim :
-      state === "absent"  ? T.grayDim :
-      state === "eqfix"   ? T.eqBg :
-      T.cell,
-    color:
-      state === "correct" ? T.green :
-      state === "present" ? T.yellow :
-      state === "absent"  ? T.gray :
-      state === "eqfix"   ? T.eqColor :
-      T.text,
+    border: `1px solid ${state === "correct" ? T.green : state === "present" ? T.yellow : state === "absent" ? T.gray : state === "active" ? T.inputBorder : state === "filled" ? T.accent : state === "eqfix" ? T.eqBorder : T.border}`,
+    background: state === "correct" ? T.greenDim : state === "present" ? T.yellowDim : state === "absent" ? T.grayDim : state === "eqfix" ? T.eqBg : T.cell,
+    color: state === "correct" ? T.green : state === "present" ? T.yellow : state === "absent" ? T.gray : state === "eqfix" ? T.eqColor : T.text,
     display: "flex", alignItems: "center", justifyContent: "center",
-    fontFamily: "'Share Tech Mono', 'Courier New', monospace",
-    fontSize: 21,
+    ...mono, fontSize: 21,
     transform: state === "filled" ? "scale(1.05)" : "scale(1)",
-    transition: "transform 0.08s, border-color 0.15s",
-    userSelect: "none",
+    transition: "transform 0.08s, border-color 0.15s", userSelect: "none",
   });
 
   const keyStyle = (ks) => ({
     height: 44, minWidth: 38, padding: "0 8px",
-    border: `1px solid ${ks === "correct" ? T.green : ks === "present" ? T.yellow : ks === "absent" ? (theme === "dark" ? "#222" : "#d1d5db") : T.border}`,
+    border: `1px solid ${ks === "correct" ? T.green : ks === "present" ? T.yellow : ks === "absent" ? T.absentKeyBorder : T.border}`,
     borderRadius: 4,
-    background: ks === "correct" ? T.greenDim : ks === "present" ? T.yellowDim : ks === "absent" ? (theme === "dark" ? "#111" : "#e5e7eb") : T.surface,
-    color: ks === "correct" ? T.green : ks === "present" ? T.yellow : ks === "absent" ? (theme === "dark" ? "#333" : "#9ca3af") : T.text,
-    fontFamily: "'Share Tech Mono', monospace", fontSize: 16,
-    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+    background: ks === "correct" ? T.greenDim : ks === "present" ? T.yellowDim : ks === "absent" ? T.absentKey : T.surface,
+    color: ks === "correct" ? T.green : ks === "present" ? T.yellow : ks === "absent" ? T.absentKeyColor : T.text,
+    ...mono, fontSize: 16, cursor: "pointer",
+    display: "flex", alignItems: "center", justifyContent: "center",
     transition: "background 0.1s", userSelect: "none", WebkitUserSelect: "none",
   });
+
+  const iconBtn = () => ({
+    background: "none", border: `1px solid ${T.border}`, borderRadius: 4,
+    padding: "4px 8px", cursor: "pointer", color: T.textMuted,
+    fontSize: 14, lineHeight: 1, transition: "opacity 0.15s",
+  });
+
+  // ─── GRIGLIA ──────────────────────────────────────────────────────────────
 
   const renderGrid = () => {
     const rows = [];
     for (let r = 0; r < MAX_TENTATIVI; r++) {
-      const isCurrentRow = r === gameState.guesses.length && gameState.status === "playing";
+      const isCurrentRow = r === session.guesses.length && session.status === "playing";
       const isFlipping = flippingRow === r;
       const isBouncing = bouncingRow === r;
       const isShaking = shakeRow && isCurrentRow;
-      const guess = gameState.guesses[r];
+      const guess = session.guesses[r];
       const feedback = guess ? computeFeedback(guess, TARGET) : null;
-
       const cells = [];
       for (let c = 0; c < LEN; c++) {
-        let state = "empty";
-        let char = "";
+        let state = "empty", char = "";
         if (guess) {
           char = guess[c];
-          state = isFlipping ? "filled" : (feedback[c] === "correct" && TARGET[c] === "=" ? "eqfix" : feedback[c]);
+          state = isFlipping ? "filled" : feedback[c];
           if (!isFlipping && feedback[c] === "correct" && TARGET[c] === "=") state = "correct";
         } else if (isCurrentRow) {
-          char = input[c] || "";
-          state = char ? "filled" : "active";
+          char = input[c] || ""; state = char ? "filled" : "active";
         }
-
-        const animClass = isFlipping ? "n-flip" : isBouncing ? "n-bounce" : isShaking ? "n-shake" : "";
-
         cells.push(
-          <div key={c} className={animClass} style={{
+          <div key={c} className={isFlipping ? "n-flip" : isBouncing ? "n-bounce" : isShaking ? "n-shake" : ""} style={{
             ...cellStyle(state),
             animationDelay: isFlipping ? `${c * FLIP_DELAY}ms` : isBouncing ? `${c * 80}ms` : "0ms",
-          }}>
-            {char}
-          </div>
+          }}>{char}</div>
         );
       }
       rows.push(<div key={r} style={{ display: "flex", gap: 5, justifyContent: "center" }}>{cells}</div>);
@@ -457,69 +431,228 @@ export default function NerdleIT() {
     return rows;
   };
 
-  const KBD_ROWS = [["7","8","9","+","-"],["4","5","6","×","÷"],["1","2","3","0","="],["DEL","INVIO"]];
-
-  const renderKbd = () => KBD_ROWS.map((row, ri) => (
+  const KBD = [["7","8","9","+","-"],["4","5","6","×","÷"],["1","2","3","0","="],["DEL","INVIO"]];
+  const renderKbd = () => KBD.map((row, ri) => (
     <div key={ri} style={{ display: "flex", gap: 5, justifyContent: "center" }}>
       {row.map((k) => (
         <button key={k} onPointerDown={(e) => { e.preventDefault(); handleKey(k); }}
-          style={{ ...keyStyle(keyStates[k]), ...(k === "DEL" || k === "INVIO" ? { minWidth: 60, fontSize: 12, letterSpacing: 0.5 } : {}) }}>
+          style={{ ...keyStyle(keyStates[k]), ...(k === "DEL" || k === "INVIO" ? { minWidth: 60, fontSize: 12 } : {}) }}>
           {k}
         </button>
       ))}
     </div>
   ));
 
-  const isDone = gameState.status !== "playing";
-  const archive = gameState.archive || [];
+  // ─── MODALI ───────────────────────────────────────────────────────────────
+
+  const stats = computeStats(storage.sessions || {});
+
+  const renderHelp = () => (
+    <Modal title="COME SI GIOCA" onClose={() => setModal(null)} T={T}>
+      <div style={{ fontSize: 13, color: T.text, lineHeight: 1.8, display: "flex", flexDirection: "column", gap: 14 }}>
+        <p>Indovina l'equazione matematica in <strong>6 tentativi</strong>. L'equazione è di <strong>7 o 8 caratteri</strong> e deve essere <strong>matematicamente corretta</strong>.</p>
+        <div>
+          <div style={{ fontSize: 11, color: T.textMuted, letterSpacing: 1, marginBottom: 6 }}>🟩 VERDE — nel posto giusto</div>
+          <div style={{ display: "flex", gap: 4 }}>
+            {["3","×","4","=","1","2"].map((ch, i) => (
+              <div key={i} style={{ ...cellStyle(i === 1 ? "absent" : "correct"), width: 36, height: 36, fontSize: 16 }}>{ch}</div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: T.textMuted, letterSpacing: 1, marginBottom: 6 }}>🟨 GIALLO — presente ma posizione sbagliata</div>
+          <div style={{ display: "flex", gap: 4 }}>
+            {["5","+","3","=","8"].map((ch, i) => (
+              <div key={i} style={{ ...cellStyle(i === 0 ? "present" : "absent"), width: 36, height: 36, fontSize: 16 }}>{ch}</div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: T.textMuted, letterSpacing: 1, marginBottom: 6 }}>⬛ GRIGIO — non presente</div>
+          <div style={{ display: "flex", gap: 4 }}>
+            {["9","-","2","=","7"].map((ch, i) => (
+              <div key={i} style={{ ...cellStyle("absent"), width: 36, height: 36, fontSize: 16 }}>{ch}</div>
+            ))}
+          </div>
+        </div>
+        <div style={{ borderTop: `1px solid ${T.border}`, paddingTop: 12, fontSize: 12, color: T.textMuted }}>
+          <p>⚠️ Il tentativo viene rifiutato se l'equazione è matematicamente errata.</p>
+          <p style={{ marginTop: 6 }}>🗂 Dall'archivio puoi giocare le equazioni degli ultimi 7 giorni.</p>
+          <p style={{ marginTop: 6 }}>🔁 Nuova equazione ogni giorno a mezzanotte (ora italiana).</p>
+        </div>
+      </div>
+    </Modal>
+  );
+
+  const renderStats = () => {
+    const maxDist = Math.max(...stats.dist, 1);
+    return (
+      <Modal title="STATISTICHE" onClose={() => setModal(null)} T={T}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+          {[["Giocate", stats.played], ["Vinte %", stats.winPct], ["Streak", stats.streak], ["Max", stats.maxStreak]].map(([label, val]) => (
+            <div key={label} style={{ flex: 1, background: T.pillBg, border: `1px solid ${T.border}`, borderRadius: 8, padding: "12px 6px", textAlign: "center" }}>
+              <div style={{ ...mono, fontSize: 24, color: T.accent, lineHeight: 1 }}>{val}</div>
+              <div style={{ fontSize: 10, color: T.textMuted, marginTop: 5, letterSpacing: 0.5 }}>{label}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ ...mono, fontSize: 10, color: T.textMuted, letterSpacing: 2, marginBottom: 10 }}>DISTRIBUZIONE TENTATIVI</div>
+          {stats.dist.map((count, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+              <div style={{ ...mono, fontSize: 12, color: T.textMuted, minWidth: 14, textAlign: "right" }}>{i + 1}</div>
+              <div style={{ flex: 1, background: T.cell, borderRadius: 3, height: 20, overflow: "hidden" }}>
+                <div style={{ width: `${Math.max((count / maxDist) * 100, count > 0 ? 6 : 0)}%`, background: T.green, height: "100%", display: "flex", alignItems: "center", paddingLeft: 6, borderRadius: 3, transition: "width 0.4s" }}>
+                  {count > 0 && <span style={{ ...mono, fontSize: 11, color: T.bg }}>{count}</span>}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+        {session.status !== "playing" && (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, borderTop: `1px solid ${T.border}`, paddingTop: 16 }}>
+            <div style={{ ...mono, fontSize: 14, color: session.status === "won" ? T.green : T.red, letterSpacing: 2 }}>{TARGET}</div>
+            <button className="n-btn" onClick={handleShare} style={{ height: 36, padding: "0 16px", border: `1px solid ${T.accent}`, borderRadius: 4, background: "transparent", color: T.accent, ...mono, fontSize: 12, cursor: "pointer", letterSpacing: 1 }}>
+              📋 COPIA RISULTATO
+            </button>
+            {copied && <div style={{ ...mono, fontSize: 11, color: T.textMuted }}>Copiato!</div>}
+            {isToday && <div style={{ ...mono, fontSize: 11, color: T.textMuted }}>Prossima: {countdown}</div>}
+          </div>
+        )}
+      </Modal>
+    );
+  };
+
+  const renderArchive = () => {
+    const dates = getAvailableDates();
+    const pastDates = dates.slice(1); // escludi oggi
+
+    return (
+      <Modal title="ARCHIVIO" onClose={() => setModal(null)} T={T}>
+        <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 14, lineHeight: 1.6 }}>
+          Gioca le equazioni dei <strong style={{ color: T.text }}>7 giorni precedenti</strong>. Le partite contano nelle statistiche.
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {pastDates.map((date) => {
+            const target = getTargetForDate(date);
+            const sess = getSession(storage, date);
+            const done = sess.status !== "playing";
+            const isActive = activeDate === date;
+
+            return (
+              <div key={date} style={{
+                display: "flex", alignItems: "center", gap: 10,
+                padding: "10px 12px",
+                background: isActive ? T.greenDim : done ? T.archivePastBg : T.archiveItemBg,
+                border: `1px solid ${isActive ? T.green : done ? T.archivePastBorder : T.archiveItemBorder}`,
+                borderRadius: 8, cursor: done ? "default" : "pointer",
+                transition: "border-color 0.15s",
+              }}
+                onClick={() => {
+                  if (!done) { setActiveDate(date); setModal(null); }
+                }}
+              >
+                {/* Data */}
+                <div style={{ ...mono, fontSize: 12, color: T.textMuted, minWidth: 50 }}>
+                  {date.slice(0, 5)}
+                </div>
+
+                {/* Equazione: nascosta se non ancora giocata */}
+                <div style={{ ...mono, fontSize: 13, flex: 1, letterSpacing: 1, color: done ? T.text : T.textMuted }}>
+                  {done ? target : "? ? ? ? ? ? ?"}
+                </div>
+
+                {/* Stato */}
+                {done ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ ...mono, fontSize: 12, color: sess.status === "won" ? T.green : T.red }}>
+                      {sess.status === "won" ? `${sess.guesses.length}/6` : "✗"}
+                    </div>
+                    <div style={{ fontSize: 10 }}>
+                      {sess.status === "won"
+                        ? Array.from({ length: 6 }).map((_, j) => j < sess.guesses.length ? "🟩" : "⬜").join("")
+                        : "⬛⬛⬛⬛⬛⬛"}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ ...mono, fontSize: 11, color: T.accent, letterSpacing: 1 }}>
+                    {isActive ? "▶ IN CORSO" : "GIOCA →"}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Modal>
+    );
+  };
+
+  // ─── RENDER ───────────────────────────────────────────────────────────────
+
+  const isDone = session.status !== "playing";
 
   return (
     <>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Outfit:wght@400;500;600&display=swap');
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { background: ${T.bg}; }
+        * { box-sizing:border-box; margin:0; padding:0; }
+        body { background:${T.bg}; }
         @keyframes n-flip { 0%{transform:scaleY(1)} 50%{transform:scaleY(0)} 100%{transform:scaleY(1)} }
         @keyframes n-shake { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-6px)} 40%{transform:translateX(6px)} 60%{transform:translateX(-4px)} 80%{transform:translateX(4px)} }
         @keyframes n-bounce { 0%,100%{transform:translateY(0) scale(1)} 40%{transform:translateY(-10px) scale(1.1)} 70%{transform:translateY(-4px) scale(1.05)} }
         .n-flip { animation: n-flip ${FLIP_DELAY * 2}ms ease forwards; }
         .n-shake { animation: n-shake 0.4s ease; }
         .n-bounce { animation: n-bounce 0.35s ease; }
-        .n-btn:hover { background: ${T.btnHoverBg} !important; color: ${T.btnHoverColor} !important; }
-        .n-thm:hover { opacity: 0.7; }
+        .n-btn:hover { background:${T.btnHoverBg}!important; color:${T.btnHoverColor}!important; }
+        .n-ico:hover { opacity:0.7; }
       `}</style>
 
-      <div style={{ fontFamily: "'Outfit', sans-serif", background: T.bg, color: T.text, minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", padding: "16px 8px 32px", position: "relative" }}>
-
-        {/* Scanlines solo dark */}
-        {theme === "dark" && (
-          <div style={{ position: "fixed", inset: 0, background: "repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.1) 2px,rgba(0,0,0,0.1) 4px)", pointerEvents: "none", zIndex: 0 }} />
-        )}
+      <div style={{ fontFamily: "'Outfit',sans-serif", background: T.bg, color: T.text, minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", padding: "16px 8px 32px" }}>
+        {theme === "dark" && <div style={{ position: "fixed", inset: 0, background: "repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.1) 2px,rgba(0,0,0,0.1) 4px)", pointerEvents: "none", zIndex: 0 }} />}
 
         <div style={{ position: "relative", zIndex: 1, width: "100%", maxWidth: 520, display: "flex", flexDirection: "column", alignItems: "center" }}>
 
           {/* ── HEADER ── */}
           <div style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid ${T.border}`, paddingBottom: 10, marginBottom: 12 }}>
-            <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 22, color: T.green, letterSpacing: 2 }}>
-              NERD<span style={{ color: T.yellow }}>LE</span>·IT
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              {/* Timer */}
-              <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 11, color: T.textMuted, textAlign: "right", lineHeight: 1.6 }}>
-                <span style={{ color: T.accent, fontSize: 13, letterSpacing: 1 }}>{countdown}</span>
-                <br />
-                <span style={{ fontSize: 9, letterSpacing: 1 }}>ALLA PROSSIMA</span>
+            <button className="n-ico" onClick={() => setModal("help")} style={iconBtn()} title="Come si gioca">?</button>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ ...mono, fontSize: 20, color: T.green, letterSpacing: 2 }}>
+                NERD<span style={{ color: T.yellow }}>LE</span>·IT
               </div>
-              {/* Theme toggle */}
-              <button className="n-thm" onClick={toggleTheme} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 4, padding: "4px 8px", cursor: "pointer", color: T.textMuted, fontSize: 14, fontFamily: "'Share Tech Mono', monospace", transition: "opacity 0.15s" }}>
+              <div style={{ ...mono, fontSize: 10, color: isToday ? T.textMuted : T.yellow, letterSpacing: 1, marginTop: 2 }}>
+                {isToday ? TODAY : `◀ ${activeDate}`}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button className="n-ico" onClick={() => setModal("stats")} style={iconBtn()} title="Statistiche">📊</button>
+              <button className="n-ico" onClick={() => setModal("archive")} style={iconBtn()} title="Archivio">🗂</button>
+              <button className="n-ico" onClick={() => setTheme((t) => t === "dark" ? "light" : "dark")} style={iconBtn()}>
                 {theme === "dark" ? "☀️" : "🌙"}
               </button>
             </div>
           </div>
 
+          {/* Banner giorno precedente */}
+          {!isToday && (
+            <div style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: T.yellowDim, border: `1px solid ${T.yellow}`, borderRadius: 6, padding: "8px 12px", marginBottom: 10 }}>
+              <div style={{ ...mono, fontSize: 11, color: T.yellow, letterSpacing: 1 }}>◀ EQUAZIONE DEL {activeDate.slice(0, 5)}</div>
+              <button onClick={() => setActiveDate(TODAY)} style={{ background: "none", border: `1px solid ${T.yellow}`, borderRadius: 4, padding: "3px 10px", cursor: "pointer", color: T.yellow, ...mono, fontSize: 11 }}>
+                OGGI →
+              </button>
+            </div>
+          )}
+
+          {/* Timer (solo oggi) */}
+          {isToday && (
+            <div style={{ ...mono, fontSize: 11, color: T.textMuted, marginBottom: 10, textAlign: "center" }}>
+              <span style={{ color: T.accent, fontSize: 14, letterSpacing: 2 }}>{countdown}</span>
+              <span style={{ marginLeft: 6, fontSize: 9, letterSpacing: 1 }}>ALLA PROSSIMA</span>
+            </div>
+          )}
+
           {/* Badge */}
-          <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 10, color: T.textMuted, letterSpacing: 1, marginBottom: 8, alignSelf: "flex-start" }}>
-            {LEN} CARATTERI · {TODAY}
+          <div style={{ ...mono, fontSize: 10, color: T.textMuted, letterSpacing: 1, marginBottom: 8 }}>
+            {LEN} CARATTERI PER EQUAZIONE
           </div>
 
           {/* ── GRIGLIA ── */}
@@ -528,7 +661,7 @@ export default function NerdleIT() {
           </div>
 
           {/* Messaggio */}
-          <div style={{ height: 28, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Share Tech Mono', monospace", fontSize: 13, color: T.yellow, letterSpacing: 1, marginBottom: 8, textAlign: "center", width: "100%" }}>
+          <div style={{ height: 28, display: "flex", alignItems: "center", justifyContent: "center", ...mono, fontSize: 13, color: T.yellow, letterSpacing: 1, marginBottom: 8, textAlign: "center", width: "100%" }}>
             {message}
           </div>
 
@@ -541,53 +674,33 @@ export default function NerdleIT() {
 
           {/* ── ENDGAME ── */}
           {isDone && (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, marginBottom: 24, width: "100%" }}>
-              <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 20, color: gameState.status === "won" ? T.green : T.red, letterSpacing: 3 }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, marginBottom: 16 }}>
+              <div style={{ ...mono, fontSize: 20, color: session.status === "won" ? T.green : T.red, letterSpacing: 3 }}>
                 {TARGET}
               </div>
-              <button className="n-btn" onClick={handleShare} style={{ height: 40, padding: "0 20px", border: `1px solid ${T.accent}`, borderRadius: 4, background: "transparent", color: T.accent, fontFamily: "'Share Tech Mono', monospace", fontSize: 13, cursor: "pointer", letterSpacing: 1, transition: "background 0.15s, color 0.15s" }}>
-                📋 COPIA RISULTATO
-              </button>
-              {copied && <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 11, color: T.textMuted }}>Copiato negli appunti!</div>}
-            </div>
-          )}
-
-          {/* ── ARCHIVIO ── */}
-          {archive.length > 0 && (
-            <div style={{ width: "100%", borderTop: `1px solid ${T.sectionBorder}`, paddingTop: 16, marginTop: 4 }}>
-              <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 10, color: T.textMuted, letterSpacing: 2, marginBottom: 10 }}>
-                ARCHIVIO ULTIME PARTITE
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="n-btn" onClick={handleShare} style={{ height: 38, padding: "0 16px", border: `1px solid ${T.accent}`, borderRadius: 4, background: "transparent", color: T.accent, ...mono, fontSize: 12, cursor: "pointer", letterSpacing: 1 }}>
+                  📋 COPIA
+                </button>
+                <button className="n-btn" onClick={() => setModal("stats")} style={{ height: 38, padding: "0 16px", border: `1px solid ${T.accent}`, borderRadius: 4, background: "transparent", color: T.accent, ...mono, fontSize: 12, cursor: "pointer", letterSpacing: 1 }}>
+                  📊 STATS
+                </button>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {[...archive].reverse().map((a, i) => (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", background: T.archBg, border: `1px solid ${T.archBorder}`, borderRadius: 6 }}>
-                    <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 12, color: T.textMuted, minWidth: 52 }}>
-                      {a.date.slice(0, 5)}
-                    </div>
-                    <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 13, color: T.text, flex: 1, letterSpacing: 1 }}>
-                      {a.eq}
-                    </div>
-                    <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 12, color: a.result === "won" ? T.green : T.red, minWidth: 28, textAlign: "right" }}>
-                      {a.result === "won" ? `${a.att}/6` : "✗"}
-                    </div>
-                    {/* Mini griglia emoji */}
-                    <div style={{ fontSize: 10, letterSpacing: -1 }}>
-                      {a.result === "won" ? "🟩".repeat(Math.min(a.att, 6)) : "⬛"}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              {copied && <div style={{ ...mono, fontSize: 11, color: T.textMuted }}>Copiato negli appunti!</div>}
             </div>
           )}
 
           {/* Footer */}
-          <div style={{ marginTop: 32, paddingTop: 12, borderTop: `1px solid ${T.sectionBorder}`, width: "100%", display: "flex", justifyContent: "space-between" }}>
+          <div style={{ marginTop: 24, paddingTop: 12, borderTop: `1px solid ${T.sectionBorder}`, width: "100%", display: "flex", justifyContent: "space-between" }}>
             <span style={{ fontSize: 9, color: T.textMuted, letterSpacing: 1 }}>UNIVERSOSPORTIVO.COM</span>
             <span style={{ fontSize: 9, color: T.textMuted, letterSpacing: 1 }}>NERDLE·IT · 473 GIORNI</span>
           </div>
-
         </div>
       </div>
+
+      {modal === "help" && renderHelp()}
+      {modal === "stats" && renderStats()}
+      {modal === "archive" && renderArchive()}
     </>
   );
 }
