@@ -1,8 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
-// 250 equazioni da 7 caratteri + 223 da 8 caratteri = 473 giorni senza ripetizioni
-// Tutte verificate: lunghezza esatta, matematicamente corrette, nessun duplicato
 
 const EQS7 = [
   "10×3=30","11+8=19","11×8=88","12×6=72","13-3=10","14×7=98","15-12=3","16+6=22",
@@ -75,15 +73,14 @@ const EQS8 = [
 const ALL = [...EQS7, ...EQS8];
 const MAX_TENTATIVI = 6;
 const STORAGE_KEY = "nerdle_it_v1";
-
-// Epoch: 1 gennaio 2026. Ogni giorno avanza di 1 indice, ciclo a 473.
+const THEME_KEY = "nerdle_it_theme";
 const EPOCH = new Date("2026-01-01T00:00:00+01:00");
+const FLIP_DELAY = 120; // ms per cella (era 60)
 
 // ─── UTILITY ──────────────────────────────────────────────────────────────────
 
 function getDailyTarget() {
-  const todayStr = new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Rome" })
-    .format(new Date()); // "YYYY-MM-DD"
+  const todayStr = new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Rome" }).format(new Date());
   const today = new Date(todayStr + "T00:00:00+01:00");
   const days = Math.floor((today - EPOCH) / 86400000);
   const idx = ((days % ALL.length) + ALL.length) % ALL.length;
@@ -92,11 +89,19 @@ function getDailyTarget() {
 
 function getItalianDate() {
   return new Intl.DateTimeFormat("it-IT", {
-    timeZone: "Europe/Rome",
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
+    timeZone: "Europe/Rome", day: "2-digit", month: "2-digit", year: "numeric",
   }).format(new Date());
+}
+
+function getMidnightCountdown() {
+  const now = new Date();
+  const romeStr = new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Rome", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(now);
+  const [h, m, s] = romeStr.split(":").map(Number);
+  const secondsLeft = (23 - h) * 3600 + (59 - m) * 60 + (60 - s);
+  const hh = String(Math.floor(secondsLeft / 3600)).padStart(2, "0");
+  const mm = String(Math.floor((secondsLeft % 3600) / 60)).padStart(2, "0");
+  const ss = String(secondsLeft % 60).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
 }
 
 function validateEquation(eq) {
@@ -107,9 +112,7 @@ function validateEquation(eq) {
     // eslint-disable-next-line no-new-func
     const val = Function('"use strict"; return (' + expr + ")")();
     return Math.abs(val - parseFloat(parts[1])) < 0.001 && isFinite(val);
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 
 function computeFeedback(guess, target) {
@@ -122,136 +125,93 @@ function computeFeedback(guess, target) {
   for (let i = 0; i < n; i++) {
     if (result[i] === "correct") continue;
     for (let j = 0; j < n; j++) {
-      if (!used[j] && guess[i] === target[j]) {
-        result[i] = "present"; used[j] = true; break;
-      }
+      if (!used[j] && guess[i] === target[j]) { result[i] = "present"; used[j] = true; break; }
     }
   }
   return result;
 }
 
 function buildShareText(target, guesses, status, date) {
-  const n = guesses.length;
   const won = status === "won";
-  let text = `Nerdle·IT ${date}\n${won ? n : "X"}/${MAX_TENTATIVI} (${target.length} caratteri)\n\n`;
+  let text = `Nerdle·IT ${date}\n${won ? guesses.length : "X"}/${MAX_TENTATIVI} (${target.length} caratteri)\n\n`;
   guesses.forEach((g) => {
     const fb = computeFeedback(g, target);
-    text += fb.map((f) => (f === "correct" ? "🟩" : f === "present" ? "🟨" : "⬛")).join("") + "\n";
+    text += fb.map((f) => f === "correct" ? "🟩" : f === "present" ? "🟨" : "⬛").join("") + "\n";
   });
   text += "\nuniversosportivo.com/nerdle";
   return text;
 }
 
 function loadState() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); }
-  catch { return {}; }
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch { return {}; }
 }
-
 function saveState(s) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); }
-  catch { /* storage non disponibile */ }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch {}
+}
+function loadTheme() {
+  try { return localStorage.getItem(THEME_KEY) || "dark"; } catch { return "dark"; }
+}
+function saveTheme(t) {
+  try { localStorage.setItem(THEME_KEY, t); } catch {}
 }
 
-// ─── STILI INLINE ─────────────────────────────────────────────────────────────
-// Tutto inline per garantire portabilità senza CSS modules o Tailwind
+// ─── TEMA ─────────────────────────────────────────────────────────────────────
 
-const S = {
-  root: {
-    fontFamily: "'Outfit', 'Segoe UI', sans-serif",
-    background: "#0d0f0c",
-    color: "#d1fae5",
-    minHeight: "100vh",
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    padding: "16px 8px 32px",
-    position: "relative",
-    overflow: "hidden",
-  },
-  scanlines: {
-    position: "fixed",
-    inset: 0,
-    background: "repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.1) 2px,rgba(0,0,0,0.1) 4px)",
-    pointerEvents: "none",
-    zIndex: 0,
-  },
-  inner: { position: "relative", zIndex: 1, width: "100%", maxWidth: 520, display: "flex", flexDirection: "column", alignItems: "center" },
-  header: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid #2a3028", paddingBottom: 10, marginBottom: 12 },
-  logo: { fontFamily: "'Share Tech Mono', 'Courier New', monospace", fontSize: 22, color: "#4ade80", letterSpacing: 2 },
-  logoSpan: { color: "#fbbf24" },
-  stat: { fontFamily: "'Share Tech Mono', monospace", fontSize: 11, color: "#6b7280", textAlign: "right", lineHeight: 1.6 },
-  statStrong: { color: "#34d399" },
-  badge: { fontFamily: "'Share Tech Mono', monospace", fontSize: 10, color: "#6b7280", letterSpacing: 1, marginBottom: 6, alignSelf: "flex-start" },
-  grid: { display: "flex", flexDirection: "column", gap: 6, marginBottom: 14, width: "100%" },
-  row: { display: "flex", gap: 5, justifyContent: "center" },
-  cell: (state) => ({
-    width: 46, height: 46,
-    border: `1px solid ${
-      state === "correct" ? "#4ade80" :
-      state === "present" ? "#fbbf24" :
-      state === "absent"  ? "#4b5563" :
-      state === "active"  ? "#3a4a38" :
-      state === "filled"  ? "#34d399" :
-      state === "eqfix"   ? "#2a3a50" :
-      "#2a3028"
-    }`,
-    borderRadius: 4,
-    background:
-      state === "correct" ? "#1a3d27" :
-      state === "present" ? "#3d3010" :
-      state === "absent"  ? "#1f2320" :
-      state === "eqfix"   ? "#0d1a2a" :
-      "#1a1e18",
-    color:
-      state === "correct" ? "#4ade80" :
-      state === "present" ? "#fbbf24" :
-      state === "absent"  ? "#4b5563" :
-      state === "eqfix"   ? "#6baed6" :
-      "#d1fae5",
-    display: "flex", alignItems: "center", justifyContent: "center",
-    fontFamily: "'Share Tech Mono', monospace",
-    fontSize: 21,
-    transition: "transform 0.08s, border-color 0.15s",
-    transform: state === "filled" ? "scale(1.05)" : "scale(1)",
-    userSelect: "none",
-  }),
-  msg: { height: 28, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Share Tech Mono', monospace", fontSize: 13, color: "#fbbf24", letterSpacing: 1, marginBottom: 8, minWidth: 300, textAlign: "center" },
-  kbd: { display: "flex", flexDirection: "column", gap: 5, marginBottom: 16 },
-  kbdRow: { display: "flex", gap: 5, justifyContent: "center" },
-  key: (ks) => ({
-    height: 44, minWidth: 38, padding: "0 8px",
-    border: `1px solid ${ks === "correct" ? "#4ade80" : ks === "present" ? "#fbbf24" : ks === "absent" ? "#222" : "#2a3028"}`,
-    borderRadius: 4,
-    background: ks === "correct" ? "#1a3d27" : ks === "present" ? "#3d3010" : ks === "absent" ? "#111" : "#141710",
-    color: ks === "correct" ? "#4ade80" : ks === "present" ? "#fbbf24" : ks === "absent" ? "#333" : "#d1fae5",
-    fontFamily: "'Share Tech Mono', monospace",
-    fontSize: 16,
-    cursor: "pointer",
-    display: "flex", alignItems: "center", justifyContent: "center",
-    transition: "background 0.1s",
-    userSelect: "none",
-    WebkitUserSelect: "none",
-  }),
-  keyWide: { minWidth: 60, fontSize: 12, letterSpacing: 0.5 },
-  endgame: { display: "flex", flexDirection: "column", alignItems: "center", gap: 10, marginTop: 4 },
-  solution: (won) => ({ fontFamily: "'Share Tech Mono', monospace", fontSize: 20, color: won ? "#4ade80" : "#f87171", letterSpacing: 3 }),
-  btn: { height: 40, padding: "0 20px", border: "1px solid #34d399", borderRadius: 4, background: "transparent", color: "#34d399", fontFamily: "'Share Tech Mono', monospace", fontSize: 13, cursor: "pointer", letterSpacing: 1 },
-  next: { fontSize: 11, color: "#6b7280", fontFamily: "'Share Tech Mono', monospace", letterSpacing: 1 },
-  archive: { width: "100%", marginTop: 16 },
-  archTitle: { fontSize: 10, color: "#6b7280", fontFamily: "'Share Tech Mono', monospace", letterSpacing: 2, marginBottom: 6 },
-  archList: { display: "flex", gap: 8, flexWrap: "wrap" },
-  archItem: { fontFamily: "'Share Tech Mono', monospace", fontSize: 11, color: "#6b7280", background: "#141710", border: "1px solid #2a3028", borderRadius: 3, padding: "3px 8px" },
-  copied: { fontFamily: "'Share Tech Mono', monospace", fontSize: 11, color: "#6b7280" },
-  googleFont: `@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Outfit:wght@400;500;600&display=swap');
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: #0d0f0c; }
-@keyframes flip { 0%{transform:scaleY(1)} 50%{transform:scaleY(0)} 100%{transform:scaleY(1)} }
-@keyframes shake { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-6px)} 40%{transform:translateX(6px)} 60%{transform:translateX(-4px)} 80%{transform:translateX(4px)} }
-@keyframes bounce { 0%,100%{transform:translateY(0) scale(1)} 40%{transform:translateY(-10px) scale(1.1)} 70%{transform:translateY(-4px) scale(1.05)} }
-.cell-flip { animation: flip 0.35s ease forwards; }
-.cell-shake { animation: shake 0.4s ease; }
-.cell-bounce { animation: bounce 0.3s ease; }`,
-};
+function getTheme(mode) {
+  const dark = {
+    bg: "#0d0f0c",
+    surface: "#141710",
+    cell: "#1a1e18",
+    border: "#2a3028",
+    green: "#4ade80",
+    greenDim: "#1a3d27",
+    yellow: "#fbbf24",
+    yellowDim: "#3d3010",
+    gray: "#4b5563",
+    grayDim: "#1f2320",
+    text: "#d1fae5",
+    textMuted: "#6b7280",
+    accent: "#34d399",
+    eqBorder: "#2a3a50",
+    eqColor: "#6baed6",
+    eqBg: "#0d1a2a",
+    scanline: "rgba(0,0,0,0.12)",
+    archBg: "#141710",
+    archBorder: "#2a3028",
+    btnHoverBg: "#34d399",
+    btnHoverColor: "#0d0f0c",
+    inputBorder: "#3a4a38",
+    red: "#f87171",
+    sectionBorder: "#1a1e18",
+  };
+  const light = {
+    bg: "#f5f5f0",
+    surface: "#ffffff",
+    cell: "#f0f0ea",
+    border: "#d0d5cc",
+    green: "#16a34a",
+    greenDim: "#dcfce7",
+    yellow: "#d97706",
+    yellowDim: "#fef9c3",
+    gray: "#9ca3af",
+    grayDim: "#f3f4f6",
+    text: "#1a1a1a",
+    textMuted: "#6b7280",
+    accent: "#059669",
+    eqBorder: "#93c5fd",
+    eqColor: "#1d4ed8",
+    eqBg: "#eff6ff",
+    scanline: "transparent",
+    archBg: "#f9f9f6",
+    archBorder: "#e5e7eb",
+    btnHoverBg: "#059669",
+    btnHoverColor: "#ffffff",
+    inputBorder: "#86efac",
+    red: "#dc2626",
+    sectionBorder: "#e5e7eb",
+  };
+  return mode === "dark" ? dark : light;
+}
 
 // ─── COMPONENTE PRINCIPALE ────────────────────────────────────────────────────
 
@@ -260,7 +220,9 @@ export default function NerdleIT() {
   const LEN = TARGET.length;
   const TODAY = getItalianDate();
 
-  // Inizializza stato da localStorage
+  const [theme, setTheme] = useState(loadTheme);
+  const T = getTheme(theme);
+
   const [gameState, setGameState] = useState(() => {
     const saved = loadState();
     if (saved.date !== TODAY) {
@@ -273,14 +235,34 @@ export default function NerdleIT() {
   const [message, setMessage] = useState("");
   const [animating, setAnimating] = useState(false);
   const [shakeRow, setShakeRow] = useState(false);
-  const [flippingRow, setFlippingRow] = useState(null); // indice riga in flip
+  const [flippingRow, setFlippingRow] = useState(null);
   const [bouncingRow, setBouncingRow] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [countdown, setCountdown] = useState(getMidnightCountdown());
+  const msgTimeout = useRef(null);
 
-  // Salva su localStorage a ogni cambio
+  // Salva stato
   useEffect(() => { saveState(gameState); }, [gameState]);
 
-  // Keydown fisico
+  // Salva tema
+  useEffect(() => { saveTheme(theme); }, [theme]);
+
+  // Timer countdown
+  useEffect(() => {
+    const id = setInterval(() => setCountdown(getMidnightCountdown()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Altezza iframe
+  useEffect(() => {
+    const send = () => window.parent?.postMessage({ type: "nerdle-height", height: document.body.scrollHeight }, "*");
+    send();
+    const ro = new ResizeObserver(send);
+    ro.observe(document.body);
+    return () => ro.disconnect();
+  }, []);
+
+  // Keydown
   useEffect(() => {
     const handler = (e) => {
       if (gameState.status !== "playing" || animating) return;
@@ -296,56 +278,33 @@ export default function NerdleIT() {
     return () => window.removeEventListener("keydown", handler);
   });
 
-  // Comunicazione altezza iframe a WordPress
-  useEffect(() => {
-    const sendHeight = () => {
-      const h = document.body.scrollHeight;
-      window.parent?.postMessage({ type: "nerdle-height", height: h }, "*");
-    };
-    sendHeight();
-    const ro = new ResizeObserver(sendHeight);
-    ro.observe(document.body);
-    return () => ro.disconnect();
-  }, []);
-
   const showMessage = useCallback((txt, duration = 2000) => {
     setMessage(txt);
-    if (duration > 0) setTimeout(() => setMessage(""), duration);
+    clearTimeout(msgTimeout.current);
+    if (duration > 0) msgTimeout.current = setTimeout(() => setMessage(""), duration);
   }, []);
 
   const handleKey = useCallback((k) => {
     if (gameState.status !== "playing" || animating) return;
-    if (k === "DEL") {
-      setInput((prev) => prev.slice(0, -1));
-      return;
-    }
-    if (k === "INVIO") {
-      submitGuess();
-      return;
-    }
-    setInput((prev) => prev.length < LEN ? [...prev, k] : prev);
+    if (k === "DEL") { setInput((p) => p.slice(0, -1)); return; }
+    if (k === "INVIO") { submitGuess(); return; }
+    setInput((p) => p.length < LEN ? [...p, k] : p);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameState.status, animating, input, LEN]);
 
   const submitGuess = () => {
     const guess = input.join("");
     if (guess.length < LEN) {
-      setShakeRow(true);
-      setTimeout(() => setShakeRow(false), 400);
-      showMessage(`Troppo corta (${guess.length}/${LEN})`);
-      return;
+      setShakeRow(true); setTimeout(() => setShakeRow(false), 400);
+      showMessage(`Troppo corta (${guess.length}/${LEN})`); return;
     }
     if (!guess.includes("=")) {
-      setShakeRow(true);
-      setTimeout(() => setShakeRow(false), 400);
-      showMessage("Manca il simbolo =");
-      return;
+      setShakeRow(true); setTimeout(() => setShakeRow(false), 400);
+      showMessage("Manca il simbolo ="); return;
     }
     if (!validateEquation(guess)) {
-      setShakeRow(true);
-      setTimeout(() => setShakeRow(false), 400);
-      showMessage("Equazione matematicamente errata");
-      return;
+      setShakeRow(true); setTimeout(() => setShakeRow(false), 400);
+      showMessage("Equazione matematicamente errata"); return;
     }
 
     const rowIdx = gameState.guesses.length;
@@ -356,6 +315,7 @@ export default function NerdleIT() {
     const won = guess === TARGET;
     const newGuesses = [...gameState.guesses, guess];
     const lost = !won && newGuesses.length >= MAX_TENTATIVI;
+    const flipDuration = LEN * FLIP_DELAY + 500;
 
     setTimeout(() => {
       setFlippingRow(null);
@@ -364,7 +324,7 @@ export default function NerdleIT() {
       const newArchive = [...(gameState.archive || [])];
       if (!newArchive.find((a) => a.date === TODAY)) {
         newArchive.push({ date: TODAY, eq: TARGET, result: won ? "won" : lost ? "lost" : "playing", att: newGuesses.length });
-        if (newArchive.length > 7) newArchive.shift();
+        if (newArchive.length > 30) newArchive.shift();
       }
 
       setGameState((prev) => ({
@@ -376,15 +336,15 @@ export default function NerdleIT() {
 
       if (won) {
         setBouncingRow(rowIdx);
-        setTimeout(() => setBouncingRow(null), 500);
+        setTimeout(() => setBouncingRow(null), 600);
         showMessage("🎯 Esatto!", 0);
       } else if (lost) {
         showMessage("Soluzione: " + TARGET, 0);
       }
-    }, LEN * 60 + 400);
+    }, flipDuration);
   };
 
-  // Calcola stati tastiera
+  // Stati tastiera
   const keyStates = {};
   gameState.guesses.forEach((g) => {
     const fb = computeFeedback(g, TARGET);
@@ -401,21 +361,62 @@ export default function NerdleIT() {
     const text = buildShareText(TARGET, gameState.guesses, gameState.status, TODAY);
     try {
       await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
     } catch {
-      // fallback per iOS/browser senza clipboard API
       const ta = document.createElement("textarea");
       ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
       document.body.appendChild(ta); ta.select();
       document.execCommand("copy");
       document.body.removeChild(ta);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
     }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
-  // ─── RENDER GRIGLIA ──────────────────────────────────────────────────────────
+  const toggleTheme = () => setTheme((t) => t === "dark" ? "light" : "dark");
+
+  // ─── RENDER ────────────────────────────────────────────────────────────────
+
+  const cellStyle = (state) => ({
+    width: 46, height: 46, borderRadius: 4,
+    border: `1px solid ${
+      state === "correct" ? T.green :
+      state === "present" ? T.yellow :
+      state === "absent"  ? T.gray :
+      state === "active"  ? T.inputBorder :
+      state === "filled"  ? T.accent :
+      state === "eqfix"   ? T.eqBorder :
+      T.border
+    }`,
+    background:
+      state === "correct" ? T.greenDim :
+      state === "present" ? T.yellowDim :
+      state === "absent"  ? T.grayDim :
+      state === "eqfix"   ? T.eqBg :
+      T.cell,
+    color:
+      state === "correct" ? T.green :
+      state === "present" ? T.yellow :
+      state === "absent"  ? T.gray :
+      state === "eqfix"   ? T.eqColor :
+      T.text,
+    display: "flex", alignItems: "center", justifyContent: "center",
+    fontFamily: "'Share Tech Mono', 'Courier New', monospace",
+    fontSize: 21,
+    transform: state === "filled" ? "scale(1.05)" : "scale(1)",
+    transition: "transform 0.08s, border-color 0.15s",
+    userSelect: "none",
+  });
+
+  const keyStyle = (ks) => ({
+    height: 44, minWidth: 38, padding: "0 8px",
+    border: `1px solid ${ks === "correct" ? T.green : ks === "present" ? T.yellow : ks === "absent" ? (theme === "dark" ? "#222" : "#d1d5db") : T.border}`,
+    borderRadius: 4,
+    background: ks === "correct" ? T.greenDim : ks === "present" ? T.yellowDim : ks === "absent" ? (theme === "dark" ? "#111" : "#e5e7eb") : T.surface,
+    color: ks === "correct" ? T.green : ks === "present" ? T.yellow : ks === "absent" ? (theme === "dark" ? "#333" : "#9ca3af") : T.text,
+    fontFamily: "'Share Tech Mono', monospace", fontSize: 16,
+    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+    transition: "background 0.1s", userSelect: "none", WebkitUserSelect: "none",
+  });
 
   const renderGrid = () => {
     const rows = [];
@@ -429,141 +430,165 @@ export default function NerdleIT() {
 
       const cells = [];
       for (let c = 0; c < LEN; c++) {
-        let cellState = "empty";
+        let state = "empty";
         let char = "";
-
         if (guess) {
           char = guess[c];
-          cellState = isFlipping ? "filled" : (feedback[c] === "correct" && TARGET[c] === "=" ? "eqfix" : feedback[c]);
-          // dopo il flip, = in posizione giusta resta eqfix ma con sfondo verde
-          if (!isFlipping && feedback[c] === "correct" && TARGET[c] === "=") cellState = "correct";
+          state = isFlipping ? "filled" : (feedback[c] === "correct" && TARGET[c] === "=" ? "eqfix" : feedback[c]);
+          if (!isFlipping && feedback[c] === "correct" && TARGET[c] === "=") state = "correct";
         } else if (isCurrentRow) {
           char = input[c] || "";
-          cellState = char ? "filled" : "active";
+          state = char ? "filled" : "active";
         }
 
-        const animClass = isFlipping ? "cell-flip" : isBouncing ? "cell-bounce" : isShaking ? "cell-shake" : "";
+        const animClass = isFlipping ? "n-flip" : isBouncing ? "n-bounce" : isShaking ? "n-shake" : "";
 
         cells.push(
-          <div
-            key={c}
-            className={animClass}
-            style={{
-              ...S.cell(cellState),
-              animationDelay: isFlipping ? `${c * 60}ms` : isBouncing ? `${c * 80}ms` : "0ms",
-            }}
-          >
+          <div key={c} className={animClass} style={{
+            ...cellStyle(state),
+            animationDelay: isFlipping ? `${c * FLIP_DELAY}ms` : isBouncing ? `${c * 80}ms` : "0ms",
+          }}>
             {char}
           </div>
         );
       }
-
-      rows.push(
-        <div key={r} style={S.row}>{cells}</div>
-      );
+      rows.push(<div key={r} style={{ display: "flex", gap: 5, justifyContent: "center" }}>{cells}</div>);
     }
     return rows;
   };
 
-  // ─── RENDER TASTIERA ─────────────────────────────────────────────────────────
+  const KBD_ROWS = [["7","8","9","+","-"],["4","5","6","×","÷"],["1","2","3","0","="],["DEL","INVIO"]];
 
-  const KBD_ROWS = [
-    ["7", "8", "9", "+", "-"],
-    ["4", "5", "6", "×", "÷"],
-    ["1", "2", "3", "0", "="],
-    ["DEL", "INVIO"],
-  ];
+  const renderKbd = () => KBD_ROWS.map((row, ri) => (
+    <div key={ri} style={{ display: "flex", gap: 5, justifyContent: "center" }}>
+      {row.map((k) => (
+        <button key={k} onPointerDown={(e) => { e.preventDefault(); handleKey(k); }}
+          style={{ ...keyStyle(keyStates[k]), ...(k === "DEL" || k === "INVIO" ? { minWidth: 60, fontSize: 12, letterSpacing: 0.5 } : {}) }}>
+          {k}
+        </button>
+      ))}
+    </div>
+  ));
 
-  const renderKbd = () =>
-    KBD_ROWS.map((row, ri) => (
-      <div key={ri} style={S.kbdRow}>
-        {row.map((k) => (
-          <button
-            key={k}
-            onPointerDown={(e) => { e.preventDefault(); handleKey(k); }}
-            style={{
-              ...S.key(keyStates[k]),
-              ...(k === "DEL" || k === "INVIO" ? S.keyWide : {}),
-            }}
-          >
-            {k}
-          </button>
-        ))}
-      </div>
-    ));
-
-  // ─── STAT HEADER ─────────────────────────────────────────────────────────────
-
-  const statText = () => {
-    const { status, guesses } = gameState;
-    if (status === "won") return { top: `${guesses.length}/6`, bottom: TODAY };
-    if (status === "lost") return { top: "0/6", bottom: TODAY };
-    return { top: `${guesses.length + 1}/${MAX_TENTATIVI}`, bottom: TODAY };
-  };
-  const st = statText();
-
-  // ─── JSX ─────────────────────────────────────────────────────────────────────
+  const isDone = gameState.status !== "playing";
+  const archive = gameState.archive || [];
 
   return (
     <>
-      <style>{S.googleFont}</style>
-      <div style={S.root}>
-        <div style={S.scanlines} />
-        <div style={S.inner}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Outfit:wght@400;500;600&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: ${T.bg}; }
+        @keyframes n-flip { 0%{transform:scaleY(1)} 50%{transform:scaleY(0)} 100%{transform:scaleY(1)} }
+        @keyframes n-shake { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-6px)} 40%{transform:translateX(6px)} 60%{transform:translateX(-4px)} 80%{transform:translateX(4px)} }
+        @keyframes n-bounce { 0%,100%{transform:translateY(0) scale(1)} 40%{transform:translateY(-10px) scale(1.1)} 70%{transform:translateY(-4px) scale(1.05)} }
+        .n-flip { animation: n-flip ${FLIP_DELAY * 2}ms ease forwards; }
+        .n-shake { animation: n-shake 0.4s ease; }
+        .n-bounce { animation: n-bounce 0.35s ease; }
+        .n-btn:hover { background: ${T.btnHoverBg} !important; color: ${T.btnHoverColor} !important; }
+        .n-thm:hover { opacity: 0.7; }
+      `}</style>
 
-          {/* Header */}
-          <div style={S.header}>
-            <div style={S.logo}>
-              NERD<span style={S.logoSpan}>LE</span>·IT
+      <div style={{ fontFamily: "'Outfit', sans-serif", background: T.bg, color: T.text, minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", padding: "16px 8px 32px", position: "relative" }}>
+
+        {/* Scanlines solo dark */}
+        {theme === "dark" && (
+          <div style={{ position: "fixed", inset: 0, background: "repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.1) 2px,rgba(0,0,0,0.1) 4px)", pointerEvents: "none", zIndex: 0 }} />
+        )}
+
+        <div style={{ position: "relative", zIndex: 1, width: "100%", maxWidth: 520, display: "flex", flexDirection: "column", alignItems: "center" }}>
+
+          {/* ── HEADER ── */}
+          <div style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid ${T.border}`, paddingBottom: 10, marginBottom: 12 }}>
+            <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 22, color: T.green, letterSpacing: 2 }}>
+              NERD<span style={{ color: T.yellow }}>LE</span>·IT
             </div>
-            <div style={S.stat}>
-              <span style={S.statStrong}>{st.top}</span>
-              <br />{st.bottom}
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              {/* Timer */}
+              <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 11, color: T.textMuted, textAlign: "right", lineHeight: 1.6 }}>
+                <span style={{ color: T.accent, fontSize: 13, letterSpacing: 1 }}>{countdown}</span>
+                <br />
+                <span style={{ fontSize: 9, letterSpacing: 1 }}>ALLA PROSSIMA</span>
+              </div>
+              {/* Theme toggle */}
+              <button className="n-thm" onClick={toggleTheme} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 4, padding: "4px 8px", cursor: "pointer", color: T.textMuted, fontSize: 14, fontFamily: "'Share Tech Mono', monospace", transition: "opacity 0.15s" }}>
+                {theme === "dark" ? "☀️" : "🌙"}
+              </button>
             </div>
           </div>
 
-          {/* Badge lunghezza */}
-          <div style={S.badge}>{LEN} CARATTERI PER EQUAZIONE</div>
+          {/* Badge */}
+          <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 10, color: T.textMuted, letterSpacing: 1, marginBottom: 8, alignSelf: "flex-start" }}>
+            {LEN} CARATTERI · {TODAY}
+          </div>
 
-          {/* Griglia */}
-          <div style={S.grid}>{renderGrid()}</div>
+          {/* ── GRIGLIA ── */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14, width: "100%" }}>
+            {renderGrid()}
+          </div>
 
           {/* Messaggio */}
-          <div style={S.msg}>{message}</div>
+          <div style={{ height: 28, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Share Tech Mono', monospace", fontSize: 13, color: T.yellow, letterSpacing: 1, marginBottom: 8, textAlign: "center", width: "100%" }}>
+            {message}
+          </div>
 
-          {/* Tastiera */}
-          {gameState.status === "playing" && (
-            <div style={S.kbd}>{renderKbd()}</div>
-          )}
-
-          {/* Endgame */}
-          {gameState.status !== "playing" && (
-            <div style={S.endgame}>
-              <div style={S.solution(gameState.status === "won")}>{TARGET}</div>
-              <button style={S.btn} onClick={handleShare}>
-                📋 COPIA RISULTATO
-              </button>
-              {copied && <div style={S.copied}>Copiato negli appunti!</div>}
-              <div style={S.next}>Prossima equazione domani a mezzanotte</div>
-
-              {/* Archivio */}
-              {gameState.archive?.length > 0 && (
-                <div style={S.archive}>
-                  <div style={S.archTitle}>ARCHIVIO</div>
-                  <div style={S.archList}>
-                    {[...gameState.archive].reverse().slice(0, 7).map((a, i) => (
-                      <div key={i} style={S.archItem}>
-                        {a.date.slice(0, 5)} · {a.eq} · {a.result === "won" ? `${a.att}/6` : "✗"}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+          {/* ── TASTIERA ── */}
+          {!isDone && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 16 }}>
+              {renderKbd()}
             </div>
           )}
+
+          {/* ── ENDGAME ── */}
+          {isDone && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, marginBottom: 24, width: "100%" }}>
+              <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 20, color: gameState.status === "won" ? T.green : T.red, letterSpacing: 3 }}>
+                {TARGET}
+              </div>
+              <button className="n-btn" onClick={handleShare} style={{ height: 40, padding: "0 20px", border: `1px solid ${T.accent}`, borderRadius: 4, background: "transparent", color: T.accent, fontFamily: "'Share Tech Mono', monospace", fontSize: 13, cursor: "pointer", letterSpacing: 1, transition: "background 0.15s, color 0.15s" }}>
+                📋 COPIA RISULTATO
+              </button>
+              {copied && <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 11, color: T.textMuted }}>Copiato negli appunti!</div>}
+            </div>
+          )}
+
+          {/* ── ARCHIVIO ── */}
+          {archive.length > 0 && (
+            <div style={{ width: "100%", borderTop: `1px solid ${T.sectionBorder}`, paddingTop: 16, marginTop: 4 }}>
+              <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 10, color: T.textMuted, letterSpacing: 2, marginBottom: 10 }}>
+                ARCHIVIO ULTIME PARTITE
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {[...archive].reverse().map((a, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", background: T.archBg, border: `1px solid ${T.archBorder}`, borderRadius: 6 }}>
+                    <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 12, color: T.textMuted, minWidth: 52 }}>
+                      {a.date.slice(0, 5)}
+                    </div>
+                    <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 13, color: T.text, flex: 1, letterSpacing: 1 }}>
+                      {a.eq}
+                    </div>
+                    <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 12, color: a.result === "won" ? T.green : T.red, minWidth: 28, textAlign: "right" }}>
+                      {a.result === "won" ? `${a.att}/6` : "✗"}
+                    </div>
+                    {/* Mini griglia emoji */}
+                    <div style={{ fontSize: 10, letterSpacing: -1 }}>
+                      {a.result === "won" ? "🟩".repeat(Math.min(a.att, 6)) : "⬛"}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Footer */}
+          <div style={{ marginTop: 32, paddingTop: 12, borderTop: `1px solid ${T.sectionBorder}`, width: "100%", display: "flex", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 9, color: T.textMuted, letterSpacing: 1 }}>UNIVERSOSPORTIVO.COM</span>
+            <span style={{ fontSize: 9, color: T.textMuted, letterSpacing: 1 }}>NERDLE·IT · 473 GIORNI</span>
+          </div>
 
         </div>
       </div>
     </>
   );
 }
+
