@@ -673,22 +673,48 @@ export default function NerdleIT() {
           )}
 
           {/* ── ENDGAME ── */}
-          {isDone && (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, marginBottom: 16 }}>
-              <div style={{ ...mono, fontSize: 20, color: session.status === "won" ? T.green : T.red, letterSpacing: 3 }}>
-                {TARGET}
+          {isDone && (() => {
+            const pastDates = getAvailableDates().slice(1);
+            const unplayed = pastDates.filter((d) => getSession(storage, d).status === "playing");
+            const nextUnplayed = unplayed[0] || null;
+            return (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, marginBottom: 16, width: "100%" }}>
+                <div style={{ ...mono, fontSize: 20, color: session.status === "won" ? T.green : T.red, letterSpacing: 3 }}>
+                  {TARGET}
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="n-btn" onClick={handleShare} style={{ height: 38, padding: "0 16px", border: `1px solid ${T.accent}`, borderRadius: 4, background: "transparent", color: T.accent, ...mono, fontSize: 12, cursor: "pointer", letterSpacing: 1 }}>
+                    📋 COPIA
+                  </button>
+                  <button className="n-btn" onClick={() => setModal("stats")} style={{ height: 38, padding: "0 16px", border: `1px solid ${T.accent}`, borderRadius: 4, background: "transparent", color: T.accent, ...mono, fontSize: 12, cursor: "pointer", letterSpacing: 1 }}>
+                    📊 STATS
+                  </button>
+                </div>
+                {copied && <div style={{ ...mono, fontSize: 11, color: T.textMuted }}>Copiato negli appunti!</div>}
+
+                {/* Suggerimento archivio — solo se siamo su oggi e ci sono giorni non giocati */}
+                {isToday && nextUnplayed && (
+                  <div style={{ width: "100%", marginTop: 6, background: T.greenDim, border: `1px solid ${T.green}`, borderRadius: 8, padding: "12px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                    <div>
+                      <div style={{ ...mono, fontSize: 11, color: T.green, letterSpacing: 1, marginBottom: 3 }}>
+                        🗂 HAI EQUAZIONI DA GIOCARE
+                      </div>
+                      <div style={{ fontSize: 12, color: T.textMuted }}>
+                        {unplayed.length === 1
+                          ? `Il giorno ${nextUnplayed.slice(0, 5)} non è ancora stato giocato.`
+                          : `${unplayed.length} giorni dell'archivio non ancora giocati.`}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => { setActiveDate(nextUnplayed); setModal(null); }}
+                      style={{ flexShrink: 0, height: 36, padding: "0 14px", border: `1px solid ${T.green}`, borderRadius: 4, background: "transparent", color: T.green, ...mono, fontSize: 12, cursor: "pointer", letterSpacing: 1, whiteSpace: "nowrap" }}>
+                      GIOCA →
+                    </button>
+                  </div>
+                )}
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button className="n-btn" onClick={handleShare} style={{ height: 38, padding: "0 16px", border: `1px solid ${T.accent}`, borderRadius: 4, background: "transparent", color: T.accent, ...mono, fontSize: 12, cursor: "pointer", letterSpacing: 1 }}>
-                  📋 COPIA
-                </button>
-                <button className="n-btn" onClick={() => setModal("stats")} style={{ height: 38, padding: "0 16px", border: `1px solid ${T.accent}`, borderRadius: 4, background: "transparent", color: T.accent, ...mono, fontSize: 12, cursor: "pointer", letterSpacing: 1 }}>
-                  📊 STATS
-                </button>
-              </div>
-              {copied && <div style={{ ...mono, fontSize: 11, color: T.textMuted }}>Copiato negli appunti!</div>}
-            </div>
-          )}
+            );
+          })()}
 
           {/* Footer */}
           <div style={{ marginTop: 24, paddingTop: 12, borderTop: `1px solid ${T.sectionBorder}`, width: "100%", display: "flex", justifyContent: "space-between" }}>
